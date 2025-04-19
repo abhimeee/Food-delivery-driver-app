@@ -1,74 +1,202 @@
-import { Image, StyleSheet, Platform } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import {
+  View,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  RefreshControl,
+} from 'react-native';
+import MapView, { Marker, Polyline } from 'react-native-maps';
+import { Delivery } from '../../types/delivery';
+import { api } from '../../services/api';
+import { ThemedText } from '../../components/ThemedText';
+import { ThemedView } from '../../components/ThemedView';
 
-import { HelloWave } from '@/components/HelloWave';
-import ParallaxScrollView from '@/components/ParallaxScrollView';
-import { ThemedText } from '@/components/ThemedText';
-import { ThemedView } from '@/components/ThemedView';
+export default function DashboardScreen() {
+  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedDelivery, setSelectedDelivery] = useState<Delivery | null>(null);
 
-export default function HomeScreen() {
+  const fetchDeliveries = async () => {
+    try {
+      // TODO: Replace with actual driver ID from auth context
+      const driverId = 'driver-123';
+      const activeDeliveries = await api.getActiveDeliveries(driverId);
+      setDeliveries(activeDeliveries);
+    } catch (error) {
+      console.error('Error fetching deliveries:', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchDeliveries();
+  }, []);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchDeliveries();
+    setRefreshing(false);
+  };
+
+  const renderDeliveryItem = ({ item }: { item: Delivery }) => (
+    <TouchableOpacity
+      style={styles.deliveryItem}
+      onPress={() => setSelectedDelivery(item)}
+    >
+      <ThemedView style={styles.deliveryCard}>
+        <ThemedText style={styles.customerName}>{item.customerName}</ThemedText>
+        <ThemedText style={styles.address}>{item.deliveryLocation.address}</ThemedText>
+        <ThemedText style={styles.estimatedTime}>
+          ETA: {item.estimatedTime}
+        </ThemedText>
+        <View style={styles.statusContainer}>
+          <View
+            style={[
+              styles.statusDot,
+              { backgroundColor: getStatusColor(item.status) },
+            ]}
+          />
+          <ThemedText style={styles.statusText}>{item.status}</ThemedText>
+        </View>
+      </ThemedView>
+    </TouchableOpacity>
+  );
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'pending':
+        return '#FFA500';
+      case 'picked_up':
+        return '#4169E1';
+      case 'in_transit':
+        return '#32CD32';
+      case 'delivered':
+        return '#008000';
+      case 'cancelled':
+        return '#FF0000';
+      default:
+        return '#808080';
+    }
+  };
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
+    <View style={styles.container}>
+      <MapView
+        style={styles.map}
+        initialRegion={{
+          latitude: 37.78825,
+          longitude: -122.4324,
+          latitudeDelta: 0.0922,
+          longitudeDelta: 0.0421,
+        }}
+      >
+        {selectedDelivery && (
+          <>
+            <Marker
+              coordinate={{
+                latitude: selectedDelivery.pickupLocation.latitude,
+                longitude: selectedDelivery.pickupLocation.longitude,
+              }}
+              title="Pickup Location"
+              pinColor="#FFA500"
+            />
+            <Marker
+              coordinate={{
+                latitude: selectedDelivery.deliveryLocation.latitude,
+                longitude: selectedDelivery.deliveryLocation.longitude,
+              }}
+              title="Delivery Location"
+              pinColor="#32CD32"
+            />
+            <Polyline
+              coordinates={[
+                {
+                  latitude: selectedDelivery.pickupLocation.latitude,
+                  longitude: selectedDelivery.pickupLocation.longitude,
+                },
+                {
+                  latitude: selectedDelivery.deliveryLocation.latitude,
+                  longitude: selectedDelivery.deliveryLocation.longitude,
+                },
+              ]}
+              strokeColor="#007AFF"
+              strokeWidth={3}
+            />
+          </>
+        )}
+      </MapView>
+
+      <View style={styles.deliveriesContainer}>
+        <ThemedText style={styles.sectionTitle}>Active Deliveries</ThemedText>
+        <FlatList
+          data={deliveries}
+          renderItem={renderDeliveryItem}
+          keyExtractor={(item) => item.id}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          }
         />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12'
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-        <ThemedText>
-          Tap the Explore tab to learn more about what's included in this starter app.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          When you're ready, run{' '}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  container: {
+    flex: 1,
+  },
+  map: {
+    flex: 1,
+  },
+  deliveriesContainer: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    marginTop: -20,
+    padding: 20,
+  },
+  sectionTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 15,
+  },
+  deliveryItem: {
+    marginBottom: 15,
+  },
+  deliveryCard: {
+    padding: 15,
+    borderRadius: 10,
+    backgroundColor: '#f8f8f8',
+  },
+  customerName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 5,
+  },
+  address: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 5,
+  },
+  estimatedTime: {
+    fontSize: 14,
+    color: '#007AFF',
+    marginBottom: 5,
+  },
+  statusContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    marginTop: 5,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 5,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  statusText: {
+    fontSize: 14,
+    color: '#666',
   },
 });
