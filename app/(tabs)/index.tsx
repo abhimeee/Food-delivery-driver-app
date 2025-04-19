@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   RefreshControl,
 } from 'react-native';
+import { router } from 'expo-router';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { Delivery } from '../../types/delivery';
 import { api } from '../../services/api';
@@ -20,7 +21,7 @@ export default function DashboardScreen() {
   const fetchDeliveries = async () => {
     try {
       // TODO: Replace with actual driver ID from auth context
-      const driverId = 'driver-123';
+      const driverId = 'driver1';
       const activeDeliveries = await api.getActiveDeliveries(driverId);
       setDeliveries(activeDeliveries);
     } catch (error) {
@@ -38,10 +39,15 @@ export default function DashboardScreen() {
     setRefreshing(false);
   };
 
+  const handleDeliveryPress = (item: Delivery) => {
+    setSelectedDelivery(item);
+    router.push(`/delivery/${item.id}`);
+  };
+
   const renderDeliveryItem = ({ item }: { item: Delivery }) => (
     <TouchableOpacity
       style={styles.deliveryItem}
-      onPress={() => setSelectedDelivery(item)}
+      onPress={() => handleDeliveryPress(item)}
     >
       <ThemedView style={styles.deliveryCard}>
         <ThemedText style={styles.customerName}>{item.customerName}</ThemedText>

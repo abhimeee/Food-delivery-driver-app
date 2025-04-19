@@ -1,6 +1,6 @@
 import { Delivery, Driver } from '../types/delivery';
 
-const API_BASE_URL = 'http://16.171.225.122:8000/';
+const API_BASE_URL = 'http://16.171.225.122:8000';
 
 export const api = {
   // Authentication
