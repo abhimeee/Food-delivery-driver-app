@@ -7,11 +7,13 @@ import {
   ScrollView,
   Animated,
   Platform,
+  Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { Delivery } from '../../types/delivery';
+import { Delivery, DeliveryStatus, TemperatureSensitivity } from '../../types/delivery';
 import { api } from '../../services/api';
 import { ThemedText } from '../../components/ThemedText';
 import { ThemedView } from '../../components/ThemedView';
@@ -30,12 +32,43 @@ interface PolylinePoint {
   longitude: number;
 }
 
+const getTemperatureIcon = (sensitivity: TemperatureSensitivity) => {
+  switch (sensitivity) {
+    case TemperatureSensitivity.HOT:
+      return 'flame';
+    case TemperatureSensitivity.CHILLED:
+      return 'snow';
+    case TemperatureSensitivity.FROZEN:
+      return 'ice-cream';
+    case TemperatureSensitivity.AMBIENT:
+    case TemperatureSensitivity.NONE:
+    default:
+      return 'thermometer';
+  }
+};
+
+const getTemperatureColor = (sensitivity: TemperatureSensitivity) => {
+  switch (sensitivity) {
+    case TemperatureSensitivity.HOT:
+      return '#FF4500';
+    case TemperatureSensitivity.CHILLED:
+      return '#1E90FF';
+    case TemperatureSensitivity.FROZEN:
+      return '#00BFFF';
+    case TemperatureSensitivity.AMBIENT:
+    case TemperatureSensitivity.NONE:
+    default:
+      return '#32CD32';
+  }
+};
+
 export default function DeliveryNavigationScreen() {
   const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [currentDeliveryIndex, setCurrentDeliveryIndex] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [routeLoading, setRouteLoading] = useState(false);
   const [directions, setDirections] = useState<DirectionStep[]>([]);
   const [totalDistance, setTotalDistance] = useState<string>('');
   const [totalDuration, setTotalDuration] = useState<string>('');
@@ -46,6 +79,10 @@ export default function DeliveryNavigationScreen() {
   const [isFollowing, setIsFollowing] = useState(true);
   const mapRef = useRef<MapView>(null);
   const lastLocation = useRef<Location.LocationObject | null>(null);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [modalScale] = useState(new Animated.Value(0));
+  const [modalOpacity] = useState(new Animated.Value(0));
 
   const getCurrentLocation = async () => {
     try {
@@ -106,7 +143,8 @@ export default function DeliveryNavigationScreen() {
       const currentDelivery = deliveries[currentDeliveryIndex];
       const origin = `${location.coords.latitude},${location.coords.longitude}`;
       const destination = `${currentDelivery.deliveryLocation.latitude},${currentDelivery.deliveryLocation.longitude}`;
-      console.log('Origin is:', origin);
+      console.log('Origin is', origin);
+      console.log('Destination is', destination);
       const response = await fetch(
         `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&mode=driving&vehicleType=twoWheeler&key=${GOOGLE_MAPS_API_KEY}`
       );
@@ -166,7 +204,7 @@ export default function DeliveryNavigationScreen() {
     fetchDeliveries();
     getCurrentLocation();
     // Update location every 30 seconds
-    const interval = setInterval(getCurrentLocation, 4000);
+    const interval = setInterval(getCurrentLocation, 30000);
 
     // Animate overlay
     Animated.parallel([
@@ -185,17 +223,69 @@ export default function DeliveryNavigationScreen() {
     return () => clearInterval(interval);
   }, []);
 
+  const animateModalIn = () => {
+    Animated.parallel([
+      Animated.spring(modalScale, {
+        toValue: 1,
+        useNativeDriver: true,
+        damping: 15,
+        stiffness: 100,
+      }),
+      Animated.timing(modalOpacity, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
+  const animateModalOut = () => {
+    Animated.parallel([
+      Animated.spring(modalScale, {
+        toValue: 0,
+        useNativeDriver: true,
+        damping: 15,
+        stiffness: 100,
+      }),
+      Animated.timing(modalOpacity, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start(() => setShowSuccessModal(false));
+  };
+
+  const showSuccessMessage = (message: string, onContinue?: () => void) => {
+    setSuccessMessage(message);
+    setShowSuccessModal(true);
+    animateModalIn();
+  };
+
   const handleCompleteDelivery = async () => {
     try {
       setLoading(true);
       const currentDelivery = deliveries[currentDeliveryIndex];
-      await api.updateDeliveryStatus(currentDelivery.id, 'delivered');
+      
+      // Update delivery status
+      await api.updateDeliveryStatus(currentDelivery.id, DeliveryStatus.DELIVERED);
       
       if (currentDeliveryIndex < deliveries.length - 1) {
-        setCurrentDeliveryIndex(currentDeliveryIndex + 1);
+        showSuccessMessage(
+          `Great job! You've successfully delivered to ${currentDelivery.customerName}.`,
+          async () => {
+            setRouteLoading(true);
+            setCurrentDeliveryIndex(currentDeliveryIndex + 1);
+            if (currentLocation) {
+              await fetchDirections(currentLocation);
+            }
+            setRouteLoading(false);
+          }
+        );
       } else {
-        Alert.alert('Success', 'All deliveries completed!');
-        router.back();
+        showSuccessMessage(
+          'Congratulations! You have successfully completed all deliveries for today.',
+          () => router.back()
+        );
       }
     } catch (error) {
       console.error('Error completing delivery:', error);
@@ -279,6 +369,44 @@ export default function DeliveryNavigationScreen() {
     }
   };
 
+  const renderDeliveryItems = (items: Delivery['items']) => {
+    return items.map((item, index) => (
+      <View key={item.id} style={styles.itemContainer}>
+        <View style={styles.itemHeader}>
+          <ThemedText style={styles.itemName}>{item.name}</ThemedText>
+          <View style={styles.itemQuantity}>
+            <ThemedText style={styles.quantityText}>x{item.quantity}</ThemedText>
+          </View>
+        </View>
+        <View style={styles.itemDetails}>
+          <View style={styles.temperatureInfo}>
+            <Ionicons 
+              name={getTemperatureIcon(item.temperature_sensitivity)} 
+              size={16} 
+              color={getTemperatureColor(item.temperature_sensitivity)} 
+            />
+            <ThemedText style={styles.temperatureText}>
+              {item.temperature_sensitivity}
+            </ThemedText>
+          </View>
+          {item.max_safe_time_minutes && (
+            <View style={styles.timeInfo}>
+              <Ionicons name="time" size={16} color="#666" />
+              <ThemedText style={styles.timeText}>
+                {item.max_safe_time_minutes} min safe
+              </ThemedText>
+            </View>
+          )}
+        </View>
+        {item.special_handling_instructions && (
+          <ThemedText style={styles.instructionsText}>
+            {item.special_handling_instructions}
+          </ThemedText>
+        )}
+      </View>
+    ));
+  };
+
   const renderMap = () => {
     if (locationError) {
       return (
@@ -349,9 +477,55 @@ export default function DeliveryNavigationScreen() {
     );
   };
 
+  const renderSuccessModal = () => (
+    <Modal
+      visible={showSuccessModal}
+      transparent
+      animationType="none"
+      onRequestClose={animateModalOut}
+    >
+      <View style={styles.modalOverlay}>
+        <Animated.View
+          style={[
+            styles.modalContent,
+            {
+              opacity: modalOpacity,
+              transform: [{ scale: modalScale }],
+            },
+          ]}
+        >
+          <View style={styles.modalIconContainer}>
+            <Ionicons name="checkmark-circle" size={60} color="#32CD32" />
+          </View>
+          <ThemedText style={styles.modalTitle}>Delivery Completed!</ThemedText>
+          <ThemedText style={styles.modalMessage}>{successMessage}</ThemedText>
+          <TouchableOpacity
+            style={styles.modalButton}
+            onPress={() => {
+              animateModalOut();
+              if (currentDeliveryIndex < deliveries.length - 1) {
+                setCurrentDeliveryIndex(currentDeliveryIndex + 1);
+                if (currentLocation) {
+                  fetchDirections(currentLocation);
+                }
+              } else {
+                router.back();
+              }
+            }}
+          >
+            <ThemedText style={styles.modalButtonText}>
+              {currentDeliveryIndex < deliveries.length - 1 ? 'Continue' : 'Finish'}
+            </ThemedText>
+          </TouchableOpacity>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+
   return (
     <View style={styles.container}>
       {renderMap()}
+      {renderSuccessModal()}
       
       <View style={styles.mapControls}>
         <TouchableOpacity 
@@ -386,71 +560,86 @@ export default function DeliveryNavigationScreen() {
           },
         ]}
       >
-        <View style={styles.deliveryInfo}>
-          <View style={styles.deliveryHeader}>
-            <ThemedText style={styles.deliveryNumber}>
-              Delivery {currentDeliveryIndex + 1} of {deliveries.length}
-            </ThemedText>
-            <View style={styles.distanceTimeContainer}>
-              <View style={styles.distanceTimeItem}>
-                <Ionicons name="bicycle" size={20} color="#32CD32" />
-                <ThemedText style={styles.distanceTimeText}>{totalDistance}</ThemedText>
-              </View>
-              <View style={styles.distanceTimeItem}>
-                <Ionicons name="time" size={20} color="#32CD32" />
-                <ThemedText style={styles.distanceTimeText}>{totalDuration}</ThemedText>
-              </View>
-            </View>
-          </View>
-          
-
-          <ThemedText style={styles.address}>
-            {deliveries[currentDeliveryIndex]?.deliveryLocation.address || 'Loading...'}
-          </ThemedText>
-        </View>
-
         <ScrollView 
-          style={styles.directionsContainer}
+          style={styles.overlayContent}
           showsVerticalScrollIndicator={false}
         >
-          {directions.map((step, index) => (
-            <Animated.View 
-              key={index} 
-              style={[
-                styles.directionStep,
-                {
-                  opacity: overlayOpacity,
-                  transform: [{ translateY: overlayTranslateY }],
-                },
-              ]}
-            >
-              <Ionicons 
-                name={getManeuverIcon(step.maneuver)} 
-                size={24} 
-                color="#32CD32" 
-                style={styles.directionIcon}
-              />
-              <View style={styles.directionTextContainer}>
-                <ThemedText style={styles.directionText}>{step.instruction}</ThemedText>
-                <View style={styles.stepDetails}>
-                  <ThemedText style={styles.stepDetailText}>{step.distance}</ThemedText>
-                  <ThemedText style={styles.stepDetailText}>{step.duration}</ThemedText>
+          <TouchableOpacity
+            style={styles.completeButton}
+            onPress={handleCompleteDelivery}
+            disabled={loading || routeLoading}
+          >
+            <Ionicons name="checkmark-circle" size={20} color="#fff" />
+            <ThemedText style={styles.completeButtonText}>
+              {loading ? 'Completing...' : routeLoading ? 'Calculating next route...' : 'Mark as Delivered'}
+            </ThemedText>
+          </TouchableOpacity>
+          
+          {routeLoading && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="small" color="#32CD32" />
+              <ThemedText style={styles.loadingText}>Calculating route to next destination...</ThemedText>
+            </View>
+          )}
+          
+          <View style={styles.deliveryInfo}>
+            <View style={styles.deliveryHeader}>
+              <ThemedText style={styles.deliveryNumber}>
+                Delivery {currentDeliveryIndex + 1} of {deliveries.length}
+              </ThemedText>
+              <View style={styles.distanceTimeContainer}>
+                <View style={styles.distanceTimeItem}>
+                  <Ionicons name="bicycle" size={16} color="#32CD32" />
+                  <ThemedText style={styles.distanceTimeText}>{totalDistance}</ThemedText>
+                </View>
+                <View style={styles.distanceTimeItem}>
+                  <Ionicons name="time" size={16} color="#32CD32" />
+                  <ThemedText style={styles.distanceTimeText}>{totalDuration}</ThemedText>
                 </View>
               </View>
-            </Animated.View>
-          ))}
-        </ScrollView>
+            </View>
+            
+            <ThemedText style={styles.customerName}>
+              {deliveries[currentDeliveryIndex]?.customerName || 'Loading...'}
+            </ThemedText>
+            <ThemedText style={styles.address}>
+              {deliveries[currentDeliveryIndex]?.deliveryLocation.address || 'Loading...'}
+            </ThemedText>
 
-        <TouchableOpacity
-          style={styles.completeButton}
-          onPress={handleCompleteDelivery}
-          disabled={loading}
-        >
-          <Ionicons name="checkmark-circle" size={24} color="#fff" />
-          <ThemedText style={styles.completeButtonText}>
-            {loading ? 'Completing...' : 'Complete Delivery'}
-          </ThemedText>
-        </TouchableOpacity>
+            <View style={styles.itemsContainer}>
+              {renderDeliveryItems(deliveries[currentDeliveryIndex]?.items || [])}
+            </View>
+          </View>
+
+          <View style={styles.directionsContainer}>
+            {directions.map((step, index) => (
+              <Animated.View 
+                key={index} 
+                style={[
+                  styles.directionStep,
+                  {
+                    opacity: overlayOpacity,
+                    transform: [{ translateY: overlayTranslateY }],
+                  },
+                ]}
+              >
+                <Ionicons 
+                  name={getManeuverIcon(step.maneuver)} 
+                  size={20} 
+                  color="#32CD32" 
+                  style={styles.directionIcon}
+                />
+                <View style={styles.directionTextContainer}>
+                  <ThemedText style={styles.directionText}>{step.instruction}</ThemedText>
+                  <View style={styles.stepDetails}>
+                    <ThemedText style={styles.stepDetailText}>{step.distance}</ThemedText>
+                    <ThemedText style={styles.stepDetailText}>{step.duration}</ThemedText>
+                  </View>
+                </View>
+              </Animated.View>
+            ))}
+          </View>
+        </ScrollView>
       </Animated.View>
     </View>
   );
@@ -527,7 +716,7 @@ const styles = StyleSheet.create({
     padding: 20,
     borderTopLeftRadius: 30,
     borderTopRightRadius: 30,
-    maxHeight: '50%',
+    maxHeight: '25%',
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -537,23 +726,25 @@ const styles = StyleSheet.create({
     shadowRadius: 3.84,
     elevation: 5,
   },
+  overlayContent: {
+    flex: 1,
+  },
   deliveryInfo: {
-    marginBottom: 15,
+    marginBottom: 10,
   },
   deliveryHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 5,
   },
   deliveryNumber: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#666',
-    fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
   },
   distanceTimeContainer: {
     flexDirection: 'row',
-    gap: 15,
+    gap: 10,
   },
   distanceTimeItem: {
     flexDirection: 'row',
@@ -562,52 +753,105 @@ const styles = StyleSheet.create({
   },
   distanceTimeText: {
     color: '#32CD32',
-    fontSize: 14,
-    fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
+    fontSize: 12,
   },
   customerName: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: 'bold',
     color: '#fff',
-    marginBottom: 5,
-    fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
+    marginBottom: 2,
   },
   address: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#999',
-    fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
+    marginBottom: 8,
+  },
+  itemsContainer: {
+    marginBottom: 10,
+  },
+  itemContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 8,
+    padding: 8,
+    marginBottom: 6,
+  },
+  itemHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  itemName: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  itemQuantity: {
+    backgroundColor: 'rgba(50, 205, 50, 0.2)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  quantityText: {
+    color: '#32CD32',
+    fontSize: 10,
+  },
+  itemDetails: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 4,
+  },
+  temperatureInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  temperatureText: {
+    fontSize: 10,
+    color: '#666',
+  },
+  timeInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  timeText: {
+    fontSize: 10,
+    color: '#666',
+  },
+  instructionsText: {
+    fontSize: 10,
+    color: '#999',
+    fontStyle: 'italic',
   },
   directionsContainer: {
-    maxHeight: 200,
-    marginBottom: 15,
+    flex: 1,
   },
   directionStep: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
   directionIcon: {
-    marginRight: 10,
+    marginRight: 8,
   },
   directionTextContainer: {
     flex: 1,
   },
   directionText: {
     color: '#fff',
-    fontSize: 14,
-    marginBottom: 4,
-    fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
+    fontSize: 12,
+    marginBottom: 2,
   },
   stepDetails: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
   },
   stepDetailText: {
     color: '#666',
-    fontSize: 12,
-    fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
+    fontSize: 10,
   },
   completeButton: {
     flexDirection: 'row',
@@ -615,14 +859,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#32CD32',
     padding: 10,
-    borderRadius: 15,
-    gap: 10,
+    borderRadius: 12,
+    gap: 8,
   },
   completeButtonText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 'bold',
-    fontFamily: Platform.OS === 'ios' ? 'System' : 'Roboto',
   },
   loadingText: {
     textAlign: 'center',
@@ -652,5 +895,71 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
     elevation: 5,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#1E1E1E',
+    borderRadius: 20,
+    padding: 20,
+    width: '80%',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  modalIconContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(50, 205, 50, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  modalMessage: {
+    fontSize: 16,
+    color: '#999',
+    textAlign: 'center',
+    marginBottom: 20,
+    lineHeight: 24,
+  },
+  modalButton: {
+    backgroundColor: '#32CD32',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 10,
+    width: '100%',
+    alignItems: 'center',
+  },
+  modalButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  loadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 10,
+    backgroundColor: 'rgba(50, 205, 50, 0.1)',
+    borderRadius: 8,
+    marginVertical: 10,
   },
 }); 
