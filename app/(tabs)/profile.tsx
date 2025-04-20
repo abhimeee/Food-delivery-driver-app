@@ -24,7 +24,7 @@ export default function ProfileScreen() {
     try {
       setLoading(true);
       // TODO: Replace with actual driver ID from auth context
-      const driverId = 'driver-123';
+      const driverId = 'driver1';
       const driverProfile = await api.getDriverProfile(driverId);
       setDriver(driverProfile);
     } catch (error) {
