@@ -155,7 +155,7 @@ export default function DashboardScreen() {
           <View style={styles.detailRow}>
             <Ionicons name="time" size={16} color="#666" />
             <ThemedText style={styles.estimatedTime}>
-              ETA: {formatTime(item.delivery_window.start_time)}
+              Delivery Window: {formatTime(item.delivery_window.start_time)} - {formatTime(item.delivery_window.end_time)}
             </ThemedText>
           </View>
         </View>
